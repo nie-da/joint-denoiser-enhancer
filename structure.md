@@ -1,5 +1,6 @@
 # Repository Structure
-thesis-image-restoration/
+```
+joint-denoiser-enhancer/
 │
 ├── README.md
 ├── STRUCTURE.md
@@ -38,4 +39,5 @@ thesis-image-restoration/
     ├── seq_evaluation/
     ├── zsn2n_colie/
     └── n2d_colie/
+```
 
