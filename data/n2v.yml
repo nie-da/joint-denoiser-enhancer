@@ -1,0 +1,15 @@
+name: n2v_env
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.9
+  - numpy
+  - scikit-image
+  - scikit-learn
+  - matplotlib
+  - tqdm
+  - pip
+  - pip:
+    - tensorflow==2.15.0
+    - n2v==0.3.3
