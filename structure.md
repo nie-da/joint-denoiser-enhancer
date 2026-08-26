@@ -13,7 +13,6 @@ joint-denoiser-enhancer/
 │
 ├── pipeline/
 │   ├── __init__.py
-│   ├── seq_evaluation.py
 │   ├── zsn2n_colie_pipeline.py
 │   ├── n2d_colie_pipeline.py
 │   ├── common_utils.py
@@ -23,17 +22,20 @@ joint-denoiser-enhancer/
 ├── external/
 │   ├── colie/
 │   ├── noise2detail/
+│   ├── N2V/
+│   ...
 │   ├── SCI/
 │   └── RUAS/
 │
-├── scripts/
-│   ├── run_all_combinations.sh
+├── sequential_evaluation/
+│   ├── seq_evaluation.py
 │   └── aggregate_results.py
 │
 ├── data/
 │   ├── noisy_images/
 │   ├── ground_truth/
-│   └── segmentation_masks/
+│   ├── segmentation_eval/
+│   └── segmentation_train/
 │
  ── results/
     ├── seq_evaluation/
