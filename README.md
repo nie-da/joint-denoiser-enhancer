@@ -123,15 +123,11 @@ Note: The original N2Self implementation was designed for grayscale images. This
 
 ---
 ### Third-Party Code
-
 Portions of this repository adapt code from third-party sources, which remain subject to their original licenses:
-
-- **COLIE** and **Noise2Detail** (`github.com/ctom2/colie`, `github.com/ctom2/noise2detail`): Licensed under Apache License 2.0. Attribution and "state changes" requirements apply to those portions — see `THIRD_PARTY_LICENSES/colie-LICENSE` and inline notices in the code files.
-
-- **ZS-N2N**: Adapted from reference implementation (Colab notebook); no explicit open-source license.
-
+- **COLIE** (`github.com/ctom2/colie`): Licensed under Apache License 2.0. Attribution and "state changes" requirements apply — see `THIRD_PARTY_LICENSES/colie-LICENSE` and inline notices in the code files.
+- **Noise2Detail** (`github.com/ctom2/noise2detail`): Used with permission of the author.
+- **ZS-N2N**: Adapted from reference implementation (Colab notebook) by Mansour & Heckel; no explicit open-source license.
 - **Other methods** (BM3D, N2V, N2Self, SCI, RUAS): Called via their own installed packages or external scripts and remain subject to their respective upstream licenses.
-
 ---
 
 ## Acknowledgements
