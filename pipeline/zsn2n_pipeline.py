@@ -1,13 +1,11 @@
 """
-N2D + COLIE joint denoising/enhancement pipeline.
+ZSN2N + COLIE joint denoising/enhancement pipeline.
 
 Three-stage pipeline:
-  Stage 1 — Bootstrap:  train model1 on the noisy image using a ZS-N2N-style
+  Stage 1 — Bootstrap:  train model on the noisy image using ZS-N2N-style
              residual loss.
-  Stage 2 — Ensemble:   build a pseudo-clean label via a multi-scale
-             pixel-shuffle ensemble from the frozen model1.
-  Stage 3 — Joint opt:  jointly optimize a COLIE illumination-enhancement
-             network and a second direct-prediction denoiser (model2) using
+  Stage 2 — Joint opt:  jointly optimize a COLIE illumination-enhancement
+             network and direct-prediction denoiser  using
              a feedback loss between the two.
 
 Ground truth is optional. When --gt-folder is provided, PSNR/SSIM are
@@ -18,10 +16,10 @@ Credits
 -------
 Pipeline design, CLI, and evaluation/IO code are original to this project.
 
-  - DenoisingNetwork, pair_downsampler, stage1_loss, pixel_unshuffle,
-    pixel_shuffle, build_pseudo_ensemble: adapted from N2D
-    (Chobola & Schnabel, MICCAI 2025).
-    Code: https://github.com/ctom2/noise2detail  (Apache License 2.0)
+  - Network, pair_downsampler, loss_func, train_step, denoise: adapted from ZS-N2N
+    (Mansour & Heckel).
+    Code: https://colab.research.google.com/drive/1i82nyizTdszyHkaHBuKPbWnTzao8HF9b
+    Code: https://colab.research.google.com/drive/1i82nyizTdszyHkaHBuKPbWnTzao8HF9b
   - INF, L_exp, L_TV, rgb2hsv_torch, hsv2rgb_torch, and COLIE utilities
     (get_v_component, interpolate_image, get_coords, get_patches, filter_up,
     replace_v_component): adapted from COLIE (Chobola et al., ECCV 2024).
@@ -31,19 +29,19 @@ See THIRD_PARTY_LICENSES/colie-LICENSE for the full Apache 2.0 license text.
 
 Usage:
     # With ground truth (saves CSV only)
-    python n2d_pipeline.py \
+    python zsn2n_pipeline.py \
         --input-folder ./noisy --gt-folder ./clean --output-folder ./out
 
     # With ground truth and save images
-    python n2d_pipeline.py \
+    python zsn2n_pipeline.py \
         --input-folder ./noisy --gt-folder ./clean --output-folder ./out --save-images
 
     # Without ground truth (save images only)
-    python n2d_pipeline.py \
+    python zsn2n_pipeline.py \
         --input-folder ./noisy --output-folder ./out --save-images
 
     # Without ground truth, no saving (just process)
-    python n2d_pipeline.py \
+    python zsn2n_pipeline.py \
         --input-folder ./noisy --output-folder ./out
 """
 
@@ -63,7 +61,7 @@ from skimage.color import gray2rgb
 from tqdm import tqdm
 
 from pipeline_utils.common_utils import load_image, save_image, evaluate_results, DEVICE
-from pipeline_utils.n2d_utils import DenoisingNetwork, stage1_loss, stage2_loss, build_pseudo_ensemble
+from pipeline_utils.zsn2n_utils import *
 
 # ============================================================
 # COLIE IMPORTS
@@ -81,7 +79,7 @@ from utils import get_v_component, interpolate_image, get_coords, get_patches, f
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="N2D + COLIE joint denoising/enhancement pipeline."
+        description="ZSN2N + COLIE joint denoising/enhancement pipeline."
     )
 
     # Paths
@@ -92,15 +90,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
                              "(filenames must match input images exactly). "
                              "When omitted, evaluation is skipped and no CSV "
                              "is written.")
-    parser.add_argument("--output-folder", type=str, default="./output_n2d_colie",
+    parser.add_argument("--output-folder", type=str, default="./output_zsn2n_colie",
                         help="Folder to write output images and (if GT provided) "
-                             "results CSV. Default: ./output_n2d_colie")
+                             "results CSV. Default: ./output_zsn2n_colie")
 
     # Training schedule
-    parser.add_argument("--bootstrap-epochs", type=int, default=200,
-                        help="Stage 1: model1 bootstrap epochs. Default: 200")
-    parser.add_argument("--joint-epochs", type=int, default=200,
-                        help="Stage 3: joint COLIE + model2 epochs. Default: 200")
+    parser.add_argument("--bootstrap-epochs", type=int, default=250,
+                        help="Stage 1: model1 bootstrap epochs. Default: 250")
+    parser.add_argument("--joint-epochs", type=int, default=1750,
+                        help="Stage 2: joint COLIE + model2 epochs. Default: 1750")
     parser.add_argument("--lambda-n2n", type=float, default=0.5,
                         help="Weight of the Stage 2 denoiser loss in the joint "
                              "objective. Default: 0.5")
@@ -118,6 +116,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lr-gamma", type=float, default=0.5,
                         help="StepLR decay factor for the Stage 1 scheduler. "
                              "Default: 0.5")
+# -----------------------------
 
     # COLIE loss weights
     parser.add_argument("--alpha", type=float, default=1.0,
@@ -160,7 +159,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 # =============================================================================
 
 def process_image(img_path: Path, args: argparse.Namespace):
-    """Run the full three-stage pipeline on a single image.
+    """Run the full two-stage pipeline on a single image.
 
     Returns
     -------
@@ -171,34 +170,27 @@ def process_image(img_path: Path, args: argparse.Namespace):
     noisy_img = noisy_np.to(DEVICE)
 
     # ── Stage 1: bootstrap ──
-    model1 = DenoisingNetwork(noisy_img.shape[1], chan_embed=args.chan_embed).to(DEVICE)
-    optimizer_s1 = optim.Adam(model1.parameters(), lr=args.lr)
-    scheduler_s1 = optim.lr_scheduler.StepLR(
-        optimizer_s1, step_size=args.step_size, gamma=args.lr_gamma)
+    model_n2n = Network(noisy_img.shape[1], chan_embed=args.chan_embed).to(DEVICE)
+    optimizer_pre = optim.Adam(model_n2n.parameters(), lr=args.lr)
+    scheduler_pre = optim.lr_scheduler.StepLR(
+        optimizer_pre, step_size=args.step_size, gamma=args.lr_gamma)
 
     for _ in range(args.bootstrap_epochs):
-        optimizer_s1.zero_grad()
-        stage1_loss(noisy_img, model1).backward()
-        optimizer_s1.step()
-        scheduler_s1.step()
+        train_step(model_n2n, optimizer_pre, noisy_img)
+        scheduler_pre.step()
 
-    # ── Stage 2: pixel-shuffle ensemble ──
-    for p in model1.parameters():
-        p.requires_grad_(False)
-    model1.eval()
-
-    semi_bootstrap = build_pseudo_ensemble(model1, noisy_img)
-
-    # Precompute COLIE inputs from the pseudo-clean ensemble output
     with torch.no_grad():
-        colie_hsv = rgb2hsv_torch(semi_bootstrap)
+        denoised_bootstrap=denoise(model_n2n, noisy_img)
+
+    # Precompute COLIE inputs from the denoised bootstrap image
+    with torch.no_grad():
+        colie_hsv = rgb2hsv_torch(denoised_bootstrap)
         colie_v = get_v_component(colie_hsv)
         colie_v_lr = interpolate_image(colie_v, args.down_size, args.down_size)
         colie_coords = get_coords(args.down_size, args.down_size)
         colie_patches = get_patches(colie_v_lr, args.window)
 
-    # ── Stage 3: joint COLIE <-> model2 ──
-    model2 = DenoisingNetwork(noisy_img.shape[1], chan_embed=args.chan_embed).to(DEVICE)
+    # ── Stage 2: joint COLIE <-> model2 ──
     model_enhancer = INF(
         patch_dim=args.window ** 2,
         num_layers=4,
@@ -206,7 +198,7 @@ def process_image(img_path: Path, args: argparse.Namespace):
         add_layer=2,
     ).to(DEVICE)
 
-    optimizer_n2d = optim.Adam(model2.parameters(), lr=1e-3)
+    optimizer_n2n = optim.Adam(model_n2n.parameters(), lr=1e-3)
     optimizer_colie = optim.Adam(model_enhancer.parameters(), lr=1e-5)
 
     l_exp = L_exp(16, args.exposure_level)
@@ -237,13 +229,13 @@ def process_image(img_path: Path, args: argparse.Namespace):
             img_hsv_fixed = replace_v_component(colie_hsv.clone(), img_v_fixed)
             enhanced = torch.clamp(hsv2rgb_torch(img_hsv_fixed), 0, 1)
 
-        # Step 3: N2D Stage 2 loss on the enhanced image
-        # model2 is a direct predictor (no residual subtraction)
-        loss_n2n = stage2_loss(enhanced, model2)
+        # Step 3: ZS-N2N loss on enhanced image
 
-        # Step 4: model2 -> COLIE feedback
+        loss_n2n = loss_func(enhanced, model_n2n)
+
+        # Step 4: model_n2n -> COLIE feedback
         with torch.no_grad():
-            denoised_out = torch.clamp(model2(enhanced), 0, 1)
+            denoised_out = torch.clamp(enhanced-model_n2n(enhanced), 0, 1)
             denoised_hsv = rgb2hsv_torch(denoised_out)
             denoised_v = get_v_component(denoised_hsv)
             denoised_v_lr = interpolate_image(denoised_v, args.down_size, args.down_size)
@@ -255,7 +247,7 @@ def process_image(img_path: Path, args: argparse.Namespace):
 
         # Step 5: combined backward
         optimizer_colie.zero_grad()
-        optimizer_n2d.zero_grad()
+        optimizer_n2n.zero_grad()
         loss_total = (
             loss_colie
             + args.lambda_n2n * loss_n2n
@@ -263,7 +255,7 @@ def process_image(img_path: Path, args: argparse.Namespace):
         )
         loss_total.backward()
         optimizer_colie.step()
-        optimizer_n2d.step()
+        optimizer_n2n.step()
 
     # ── Final output ──
     with torch.no_grad():
@@ -274,7 +266,7 @@ def process_image(img_path: Path, args: argparse.Namespace):
         img_v_fixed = filter_up(colie_v_lr, img_v_fixed_lr, colie_v).clamp(0, 1)
         img_hsv_fixed = replace_v_component(colie_hsv.clone(), img_v_fixed)
         enhanced_final = torch.clamp(hsv2rgb_torch(img_hsv_fixed), 0, 1)
-        final_output = torch.clamp(model2(enhanced_final), 0, 1)
+        final_output = torch.clamp(enhanced_final - model_n2n(enhanced_final), 0, 1)
 
     return final_output, noisy_img
 
@@ -315,7 +307,7 @@ def main(argv=None):
             print(f"Resuming — {len(completed)} images already completed.")
 
     print(f"\n{'='*60}")
-    print(f"N2D + COLIE pipeline")
+    print(f"ZS-N2N+ COLIE pipeline")
     print(f"Input   : {input_folder}")
     print(f"GT      : {gt_folder if gt_folder else 'not provided (evaluation skipped)'}")
     print(f"Output  : {output_folder}")
@@ -382,7 +374,7 @@ def main(argv=None):
         df = pd.DataFrame(results_list)
         df.to_csv(csv_path, index=False)
         print("\n" + "=" * 60)
-        print("SUMMARY — N2D + COLIE pipeline")
+        print("SUMMARY — ZS-N2N + COLIE pipeline")
         print("=" * 60)
         print(f"Images processed : {len(df)}")
         print(f"Mean PSNR noisy  : {df['psnr_noisy'].mean():.2f} dB")

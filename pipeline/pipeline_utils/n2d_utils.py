@@ -1,6 +1,5 @@
 # =============================================================================
-# N2D model and losses
-# Adapted from Chobola & Schnabel, MICCAI 2025.
+# N2D model and losses from Chobola & Schnabel, MICCAI 2025.
 # Code: https://github.com/ctom2/noise2detail  (Apache License 2.0)
 #Adaptations: stage2_loss modified (self-supervised input)
 # =============================================================================
